@@ -17,7 +17,7 @@ import requests
 from flask import Blueprint, request
 from routes.health import *
 import google.generativeai as genai
-from bs4 import BeautifulSoup
+#from bs4 import BeautifulSoup
 import requests
 
 # Loglama ve Environment Yapılandırması
@@ -36,8 +36,6 @@ def validate_location(location: str) -> bool:
     except:
         return False
     
-
-
 # Flask Uygulamasını Başlat
 app = Flask(__name__)
 
@@ -79,15 +77,10 @@ except Exception as e:
     firestore_db = None
     realtime_db = None
 
-def get_location(user_id: str) -> str:
-    ref = db.reference(f'users/{user_id}/location')
-    location = ref.get()
-    
-    if location:
-        return location
-    else:
-        return 'Kayseri'
-
+def get_location(user_id: str) -> tuple:
+    """(lat, lon) tuple döner"""
+    location_str = db.reference(f'/users/{user_id}/location').get()
+    return tuple(map(float, location_str.split(','))) if location_str else 'Kayseri'
 
 @app.route('/verify-token', methods=['POST'])
 def verify_token():
@@ -204,6 +197,66 @@ def scrape_municipality_announcements(city: str = "ankara") -> list:
     except Exception as e:
         logger.error(f"Belediye duyuru çekme hatası: {str(e)}")
         return []
+    
+# --------------------------
+# Gelişmiş Bildirim Sistemi
+# --------------------------
+def generate_recommendation_message(cafes: list) -> str:
+    """Kafe listesini kullanıcı dostu bir mesaja dönüştürür"""
+    if not cafes:
+        return "Yakınlarda önerilecek kafe bulunamadı."
+    
+    message = "Yakınınızdaki önerilen kafeler:\n"
+    for i, cafe in enumerate(cafes[:5], 1):
+        message += f"{i}. {cafe['name']} - {cafe['distance']} metre uzakta\n"
+    message += "\nBu kafelerde dinlenebilir veya içecek alabilirsiniz."
+    return message
+
+def send_enhanced_alert(user_id: str, alert_type: str, original_data: dict):
+    """Özel kafe önerili bildirim gönderir"""
+    try:
+        # 1. Kullanıcı konumunu al
+        location = get_location(user_id)
+        
+        # 2. Yakın kafeleri bul
+        lat, lon = location.split(',')  # Konum formatı "lat,lon" olmalı
+        cafes = CafeRecommendationService.find_top5_cafes(lat, lon)
+        
+        # 3. Öneri mesajını oluştur
+        recommendation_msg = generate_recommendation_message(cafes)
+        
+        # 4. Gemini ile bağlamsal mesaj oluştur
+        full_message = f"{original_data['message']}\n\n{recommendation_msg}"
+        gemini_analysis = analyze_with_gemini(
+            prompt="Bu uyarıyı ve kafe önerilerini birleştirerek dostça bir mesaj oluştur:",
+            context=full_message
+        )
+        
+        # 5. Bildirimi kaydet ve gönder
+        notification_id = Notification(user_id).create(
+            notification_type=f"enhanced_{alert_type}",
+            message=gemini_analysis,
+            metadata={
+                "original_alert": original_data,
+                "cafes": cafes
+            }
+        )
+        
+        # 6. Push bildirim gönder
+        FCMManager(user_id).send_push_notification(
+            title="🚨 Acil Durum + Öneriler",
+            body=gemini_analysis,
+            data={
+                "type": alert_type,
+                "cafes": cafes
+            }
+        )
+        
+        return notification_id
+        
+    except Exception as e:
+        logger.error(f"Gelişmiş bildirim hatası: {str(e)}")
+        return None
 #GEMINI END
 
 #WEATHER.PY ENDPOINTS
@@ -475,6 +528,23 @@ def trigger_municipality_alert(user_id: str):
 def trigger_weather_alert(user_id: str):
     alert_data = request.get_json()
     return enhanced_weather_alert(user_id, alert_data)
+
+@notifications_bp.route('/weather-alert/<user_id>', methods=['POST'])
+def trigger_weather_alert(user_id: str):
+    alert_data = request.get_json()
+    
+    # Mevcut hava durumu verilerini al
+    weather_data = get_weather(get_location(user_id))
+    
+    # Gelişmiş bildirim gönder
+    return send_enhanced_alert(
+        user_id=user_id,
+        alert_type="weather_alert",
+        original_data={
+            "message": alert_data['message'],
+            "data": weather_data
+        }
+    )
 #NOTIFICATION.PY ENDPOINTS END
 
 #HEALTH.PY ENDPOINTS
@@ -523,6 +593,32 @@ def delete_contact(user_id, contact_id):
     """Acil durum kişisini silme"""
     return delete_emergency_contact(user_id, contact_id)
 
+@emergency_bp.route('/trigger/<user_id>', methods=['POST'])
+def trigger_emergency_action(user_id):
+    """Acil durum tetikleme (Güncellenmiş)"""
+    is_emergency = check_emergency(user_id)
+    
+    if is_emergency:
+        # 1. Temel acil durum işlemleri
+        emergency_data = get_realtime_health_data(user_id)
+        send_emergency_sms(user_id, "Acil durum tespit edildi!")
+        
+        # 2. Kafe önerili bildirim
+        send_enhanced_alert(
+            user_id=user_id,
+            alert_type="health_emergency",
+            original_data={
+                "message": "Sağlık durumunuzda acil değişiklik tespit edildi!",
+                "data": emergency_data
+            }
+        )
+        
+        return jsonify({
+            "success": True,
+            "message": "Acil durum prosedürleri başlatıldı"
+        }), 200
+        
+    return jsonify({"message": "Acil durum yok"}), 200
 # --------------------------
 # Acil Durum Yönetimi
 # --------------------------
@@ -569,8 +665,8 @@ def get_distance():
 
 @app.route("/cafes/top5", methods=["GET"])
 def get_top5_cafes():
-    lat = request.args.get("lat") #39.96939957261083
-    lon = request.args.get("lon") #32.744049317303556
+    lat = 39.96939957261083 #request.args.get("lat") 
+    lon =  32.744049317303556 #request.args.get("lon")
 
     if not lat or not lon:
         return jsonify({"error": "Lat ve lon zorunlu"}), 400
@@ -581,8 +677,6 @@ def get_top5_cafes():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 #CAFE RECOMMENDATION SERVICE ENDPOINTS END 
-
-
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=False)

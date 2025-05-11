@@ -15,13 +15,11 @@ class CafeRecommendationService:
     }
 
     @staticmethod
-    def find_top5_cafes(latitude, longitude):
-        latitude = float(latitude)
-        longitude = float(longitude)
-
+    def find_top5_cafes(lat: float, lon: float) -> list:
+        """Güncellenmiş parametre kullanımı"""
         url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
         params = {
-            "location": f"{latitude},{longitude}",
+            "location": f"{lat},{lon}",  # Doğrudan float değerleri kullan
             "radius": 2000,
             "type": "cafe",
             "key": GOOGLE_MAPS_API_KEY
@@ -93,23 +91,22 @@ class CafeRecommendationService:
         return R * c
 
     @staticmethod
-    def find_nearest_cafes(latitude, longitude):
-        """
-        Find the two nearest cafes using Google Maps API.
-        """
+    def find_nearest_cafes(latitude: float, longitude: float):
         try:
             latitude = float(latitude)
             longitude = float(longitude)
         except ValueError:
             return {"error": "Geçersiz koordinat değerleri. Lütfen sayısal değerler girin."}
-
+        
+        """Parametreler artık direkt float olarak alınıyor"""
         url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
         params = {
-            "location": f"{latitude},{longitude}",
-            "radius": 2000,  # Search within 2 km
+            "location": f"{latitude},{longitude}",  # Float direkt kullanım
+            "radius": 2000,
             "type": "cafe",
-            "key": CafeRecommendationService.GOOGLE_MAPS_API_KEY
+            "key": GOOGLE_MAPS_API_KEY
         }
+
         response = requests.get(url, params=params)
         if response.status_code != 200:
             return {"error": "API isteği başarısız oldu", "details": response.text}
