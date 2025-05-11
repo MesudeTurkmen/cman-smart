@@ -1,0 +1,269 @@
+from flask import Flask, request, jsonify
+import firebase_admin
+from firebase_admin import credentials, auth, firestore, db
+from firebase_admin.exceptions import FirebaseError
+from dotenv import load_dotenv
+import os
+import logging
+from routes.firebase_crud import *
+from routes.weather import *
+from routes.auth import *
+from geopy import Nominatim
+
+
+# Loglama ve Environment Yapılandırması
+load_dotenv()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def get_user(email):
+    return db.reference(f'/users/{email}').get()
+
+#konum doğrulama
+def validate_location(location: str) -> bool:
+    try:
+        geolocator = Nominatim(user_agent="weather_app")
+        return bool(geolocator.geocode(location))
+    except:
+        return False
+    
+
+
+# Flask Uygulamasını Başlat
+app = Flask(__name__)
+
+# Firebase Başlatma
+try:
+    # Gerekli environment değişkenlerini kontrol et
+    FIREBASE_SERVICE_ACCOUNT = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH")
+    FIREBASE_DB_URL = os.getenv("FIREBASE_DB_URL")
+    
+    if not all([FIREBASE_SERVICE_ACCOUNT, FIREBASE_DB_URL]):
+        raise ValueError("Firebase environment değişkenleri eksik")
+
+    # Önceki bağlantıları temizle
+    if firebase_admin._apps:
+        firebase_admin.delete_app(firebase_admin.get_app())
+        logger.info("Önceki Firebase bağlantısı temizlendi")
+
+    # Firebase'i başlat
+    cred = credentials.Certificate(FIREBASE_SERVICE_ACCOUNT)
+    firebase_app = firebase_admin.initialize_app(cred, {
+        'databaseURL': FIREBASE_DB_URL
+    })
+    
+    # Servisleri başlat
+    firestore_db = firestore.client()
+    realtime_db = db.reference('/')
+    logger.info("✅ Firebase servisleri başlatıldı")
+
+except (ValueError, FileNotFoundError) as e:
+    logger.error(f"❌ Konfigürasyon hatası: {str(e)}")
+    firestore_db = None
+    realtime_db = None
+except FirebaseError as e:
+    logger.error(f"❌ Firebase hatası: {str(e)}")
+    firestore_db = None
+    realtime_db = None
+except Exception as e:
+    logger.error(f"❌ Kritik hata: {str(e)}", exc_info=True)
+    firestore_db = None
+    realtime_db = None
+
+def get_location(user_id: str) -> str:
+    ref = db.reference(f'users/{user_id}/location')
+    location = ref.get()
+    
+    if location:
+        return location
+    else:
+        return 'Kayseri'
+
+
+@app.route('/verify-token', methods=['POST'])
+def verify_token():
+    data = request.get_json()
+    id_token = data.get('idToken')
+
+    if not id_token:
+        return jsonify({"error": "ID token missing"}), 400
+
+    try:
+        # Verify the ID token
+        decoded_token = auth.verify_id_token(id_token)
+        uid = decoded_token['uid']
+        return jsonify({"message": "Token verified", "uid": uid}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 401
+
+@app.route('/')
+def home():
+    return "Firebase Auth Flask Backend is running."
+
+@app.route('/api/test', methods=['GET'])
+def test():
+    return jsonify({"message": "Merhaba AWS!"})
+
+#WEATHER.PY ENDPOINTS
+@app.route('/weather/weekly/<user_id>', methods=['GET'])
+def weekly_weather(user_id: str):
+    """Kullanıcının konumuna göre 7 günlük hava tahmini"""
+    try:
+        location = get_location(user_id =user_id)
+        api_key = os.getenv("VISUAL_CROSSING_API_KEY")
+        
+        response = requests.get(
+            f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{location}/next7days",
+            params={
+                "unitGroup": "metric",
+                "include": "days",
+                "key": api_key,
+                "contentType": "json"
+            },
+            timeout=15
+        )
+        response.raise_for_status()
+        
+        weekly_data = []
+        for day in response.json().get('days', []):
+            weekly_data.append({
+                "date": day['datetime'],
+                "temp_max": day['tempmax'],
+                "temp_min": day['tempmin'],
+                "precip_prob": day['precipprob'],
+                "conditions": day['conditions'],
+                "sunrise": day['sunrise'],
+                "sunset": day['sunset']
+            })
+            
+        return jsonify({
+            "location": location,
+            "forecast_days": len(weekly_data),
+            "data": weekly_data
+        }), 200
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"API hatası: {str(e)}")
+        return jsonify({"error": "Hava durumu servisine ulaşılamıyor"}), 503
+    except Exception as e:
+        logger.error(f"Haftalık tahmin hatası: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/weather/current/<user_id>', methods=['GET'])
+def current_weather(user_id: str):
+    """Kullanıcının konumuna göre anlık hava durumu"""
+    try:
+        location = get_location(user_id)
+        api_key = os.getenv("VISUAL_CROSSING_API_KEY")
+        
+        response = requests.get(
+            f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{location}/today",
+            params={
+                "unitGroup": "metric",
+                "include": "current",
+                "key": api_key,
+                "contentType": "json"
+            },
+            timeout=10
+        )
+        response.raise_for_status()
+        
+        current_data = response.json().get('currentConditions', {})
+        
+        return jsonify({
+            "location": location,
+            "temp": current_data.get('temp'),
+            "feels_like": current_data.get('feelslike'),
+            "humidity": current_data.get('humidity'),
+            "conditions": current_data.get('conditions')
+        }), 200
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Current weather API error: {str(e)}")
+        return jsonify({"error": "Hava durumu servisine ulaşılamıyor"}), 503
+    except Exception as e:
+        logger.error(f"Current weather error: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/weather/alerts/<user_id>', methods=['GET'])
+def weather_alerts(user_id: str):
+    """Kullanıcı için aktif meteorolojik uyarılar"""
+    try:
+        location = get_location(user_id)
+        
+        # Gerçek veri için Firebase'den geçmiş veri çek
+        ref = db.reference(f'/weather_history/{user_id}')
+        historical_data = ref.get()
+        
+        alerts = check_sudden_change(historical_data, get_weather(location))
+        
+        return jsonify({
+            "location": location,
+            "alerts": alerts if alerts else [],
+            "last_updated": datetime.now().isoformat()
+        }), 200
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Weather alerts API error: {str(e)}")
+        return jsonify({"error": "Hava durumu servisine ulaşılamıyor"}), 503
+    except Exception as e:
+        logger.error(f"Alert processing error: {str(e)}")
+        return jsonify({"error": "Uyarılar işlenemedi"}), 500
+
+@app.route('/weather/daily/<user_id>', methods=['GET'])
+def daily_detailed_weather(user_id: str):
+    """Kullanıcının konumuna göre günün saatlik hava durumu"""
+    try:
+        # 1. Kullanıcı konumunu al
+        location = get_location(user_id)
+        
+        # 2. API'den saatlik verileri çek
+        api_key = os.getenv("VISUAL_CROSSING_API_KEY")
+        today = datetime.now().strftime("%Y-%m-%d")
+        
+        response = requests.get(
+            f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{location}/{today}/{today}",
+            params={
+                "unitGroup": "metric",
+                "include": "hours",
+                "key": api_key,
+                "contentType": "json"
+            },
+            timeout=15
+        )
+        response.raise_for_status()
+        
+        # 3. Veriyi işle
+        hourly_data = []
+        day_data = response.json().get('days', [{}])[0]
+        for hour in day_data.get('hours', []):
+            hourly_data.append({
+                "time": datetime.fromtimestamp(hour['datetimeEpoch']).strftime("%H:%M"),
+                "temp": hour.get('temp'),
+                "feels_like": hour.get('feelslike'),
+                "humidity": f"%{hour.get('humidity', 0)}",
+                "precip_prob": f"%{hour.get('precipprob', 0)}",
+                "wind_speed": f"{hour.get('windspeed', 0)} km/s",
+                "conditions": hour.get('conditions')
+            })
+            
+        return jsonify({
+            "location": location,
+            "date": today,
+            "hours": hourly_data
+        }), 200
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Saatlik veri API hatası: {str(e)}")
+        return jsonify({"error": "Hava durumu servisine ulaşılamıyor"}), 503
+    except IndexError:
+        logger.error("Geçersiz veri yapısı")
+        return jsonify({"error": "Servis yanıtı beklenen formatta değil"}), 500
+    except Exception as e:
+        logger.error(f"Saatlik veri işleme hatası: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+#WEATHER.PY ENDPOINTS END    
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8080, debug=False)

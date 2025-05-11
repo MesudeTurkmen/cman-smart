@@ -1,0 +1,10 @@
+# Kullanıcıya anomali bildirimi gönder
+success = check_sudden_change(
+    user_id="user123", 
+    city="Istanbul"
+)
+
+if success:
+    print("Bildirim gönderildi!")
+else:
+    print("Anomali yok")
