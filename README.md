@@ -1,4 +1,4 @@
-## kullanıcı tercihine göre sabah/akşam hava durumu (OpenWeatherMap API)
+## kullanıcı tercihine göre sabah/akşam hava durumu 
 ## Ani Değişimlerde Acil Uyarı
 ## Giyilebilir Cihaz Entegrasyonu
 ## Belediye Verileri
