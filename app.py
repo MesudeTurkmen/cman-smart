@@ -1,29 +1,36 @@
 from flask import Flask, request, jsonify
+from flask import Blueprint, request
+
 import firebase_admin
 from firebase_admin import credentials, auth, firestore, db
 from firebase_admin.exceptions import FirebaseError
+
 from dotenv import load_dotenv
 import os
+import json
+
 import logging
-from routes.firebase_crud import *
+import requests
+
 from routes.weather import *
 from routes.auth import *
-from geopy import Nominatim
+from routes.cafe_recommendation_service import *
+from routes.health import *
+
 from models.notification import Notification
 from models.notification import *
 from models.notification import FCMManager
-from routes.cafe_recommendation_service import *
-import requests
-from flask import Blueprint, request
-from routes.health import *
+
+from geopy import Nominatim
 import google.generativeai as genai
-#from bs4 import BeautifulSoup
-import requests
+from bs4 import BeautifulSoup
 
 # Loglama ve Environment Yapılandırması
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+MOCK_JSON_PATH = os.path.join(os.path.dirname(__file__), 'tests\mock-anno.json')
 
 def get_user(email):
     return db.reference(f'/users/{email}').get()
@@ -80,7 +87,7 @@ except Exception as e:
 def get_location(user_id: str) -> tuple:
     """(lat, lon) tuple döner"""
     location_str = db.reference(f'/users/{user_id}/location').get()
-    return tuple(map(float, location_str.split(','))) if location_str else 'Kayseri'
+    return tuple(map(float, location_str.split(','))) if location_str else 'Ankara'
 
 @app.route('/verify-token', methods=['POST'])
 def verify_token():
@@ -154,9 +161,8 @@ def analyze_with_gemini(prompt: str, context: str) -> str:
         logger.error(f"Gemini analiz hatası: {str(e)}")
         return "Durum analizi şu anda mevcut değil"
 
-# --------------------------
 # Akıllı Uyarı Sistemleri
-# --------------------------
+
 def enhanced_weather_alert(user_id: str, alert_data: dict):
     """Hava durumu uyarılarını Gemini ile zenginleştirir"""
     analysis = analyze_with_gemini(
@@ -173,34 +179,30 @@ def enhanced_weather_alert(user_id: str, alert_data: dict):
     # Bildirimi kaydet ve gönder
     return send_weather_alert(user_id, enhanced_alert)
 
-def scrape_municipality_announcements(city: str = "ankara") -> list:
-    """Belediye duyurularını çeker (Örnek: Ankara Büyükşehir)"""
+def scrape_municipality_announcements(city: str = "ankara") -> List[Dict]:
+    """JSON dosyasından mock veri çeken fonksiyon"""
     try:
-        url = f"https://www.{city}.bel.tr/haberler"
-        response = requests.get(url, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
+        if city.lower() != "ankara":
+            return []
+            
+        # JSON dosyasını oku
+        with open(MOCK_JSON_PATH, 'r', encoding='utf-8') as file:
+            announcements = json.load(file)
+            
+        return announcements[:5]  # İlk 5 kaydı dön
         
-        announcements = []
-        for item in soup.select('.news-item'):
-            title = item.select_one('.news-title').text.strip()
-            date = item.select_one('.news-date').text.strip()
-            content = item.select_one('.news-excerpt').text.strip()
-            
-            announcements.append({
-                "title": title,
-                "date": date,
-                "content": content
-            })
-            
-        return announcements[:5]  # Son 5 duyuru
-    
+    except FileNotFoundError:
+        app.logger.error("JSON dosyası bulunamadı")
+        return []
+    except json.JSONDecodeError:
+        app.logger.error("Geçersiz JSON formatı")
+        return []
     except Exception as e:
-        logger.error(f"Belediye duyuru çekme hatası: {str(e)}")
+        app.logger.error(f"Beklenmeyen hata: {str(e)}")
         return []
     
-# --------------------------
 # Gelişmiş Bildirim Sistemi
-# --------------------------
+
 def generate_recommendation_message(cafes: list) -> str:
     """Kafe listesini kullanıcı dostu bir mesaja dönüştürür"""
     if not cafes:
@@ -417,14 +419,12 @@ def daily_detailed_weather(user_id: str):
     except Exception as e:
         logger.error(f"Saatlik veri işleme hatası: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
-
 #WEATHER.PY ENDPOINTS END    
 
 #NOTIFICATION.PY ENDPOINT
 notifications_bp = Blueprint('notifications', __name__, url_prefix='/api/notifications')
-# --------------------------
+
 # Temel Bildirim İşlemleri
-# --------------------------
 
 @notifications_bp.route('/<user_id>', methods=['POST'])
 def create_notification(user_id: str):
@@ -464,9 +464,7 @@ def delete_notification(user_id: str, notification_id: str):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# --------------------------
 # Push Bildirim İşlemleri
-# --------------------------
 
 @notifications_bp.route('/devices/<user_id>', methods=['POST'])
 def register_device(user_id: str):
@@ -486,7 +484,6 @@ def send_test_push(user_id: str):
         data=request.json.get('data', {'type': 'test'})
     )
     return jsonify(result), 200
-
 
 @notifications_bp.route('/analyzed-alerts/<user_id>', methods=['GET'])
 def get_analyzed_alerts(user_id: str):
@@ -562,9 +559,7 @@ def get_health_info(user_id):
     """Kullanıcının sağlık bilgilerini getirme"""
     return get_user_health_data(user_id)
 
-# --------------------------
 # Gerçek Zamanlı Sağlık Verileri
-# --------------------------
 
 @health_bp.route('/realtime/<user_id>', methods=['GET'])
 def realtime_health_data(user_id):
@@ -573,9 +568,7 @@ def realtime_health_data(user_id):
     data = get_realtime_health_data(user_id, use_real_api)
     return jsonify(data), 200
 
-# --------------------------
 # Acil Durum Kişi Yönetimi
-# --------------------------
 
 @emergency_bp.route('/contacts/<user_id>', methods=['POST'])
 def add_contact(user_id):
@@ -619,9 +612,8 @@ def trigger_emergency_action(user_id):
         }), 200
         
     return jsonify({"message": "Acil durum yok"}), 200
-# --------------------------
+
 # Acil Durum Yönetimi
-# --------------------------
 
 @emergency_bp.route('/check/<user_id>', methods=['GET'])
 def check_emergency_status(user_id):
@@ -677,6 +669,20 @@ def get_top5_cafes():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 #CAFE RECOMMENDATION SERVICE ENDPOINTS END 
+
+#BELEDİYE ENDPOINT
+@app.route('/api/municipality-announcements')
+def get_announcements():
+    city = request.args.get('city', 'ankara').lower()
+    data = scrape_municipality_announcements(city)
+    
+    return jsonify({
+        "city": city,
+        "count": len(data),
+        "announcements": data
+    })
+
+#BELEDİYE ENDPOINT END
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=False)
