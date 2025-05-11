@@ -11,6 +11,8 @@ from routes.auth import *
 from geopy import Nominatim
 from models.notification import Notification
 from models.notification import *
+from models.notification import FCMManager
+from routes.cafe_recommendation_service import *
 import requests
 from flask import Blueprint, request
 from routes.health import *
@@ -388,6 +390,50 @@ def trigger_emergency_action(user_id):
     """Acil durum tetikleme ve SMS gönderme"""
     return trigger_emergency(user_id)
 #HEALTH.PY ENDPOINTS END
+
+#CAFE RECOMMENDATION SERVICE ENDPOINTS
+@app.route("/cafes/nearest", methods=["GET"])
+def get_nearest_cafes():
+    lat = request.args.get("lat")
+    lon = request.args.get("lon")
+    
+    if not lat or not lon:
+        return jsonify({"error": "Latitude ve longitude gereklidir."}), 400
+
+    try:
+        result = CafeRecommendationService.find_nearest_cafes(lat, lon)
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+@app.route("/cafes/distance", methods=["GET"])
+def get_distance():
+    try:
+        lat1 = float(request.args.get("lat1"))
+        lon1 = float(request.args.get("lon1"))
+        lat2 = float(request.args.get("lat2"))
+        lon2 = float(request.args.get("lon2"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Tüm koordinatlar sayısal olmalı."}), 400
+
+    distance = CafeRecommendationService.calculate_distance(lat1, lon1, lat2, lon2)
+    return jsonify({"distance_meters": round(distance, 2)}), 200
+
+@app.route("/cafes/top5", methods=["GET"])
+def get_top5_cafes():
+    lat = request.args.get("lat") #39.96939957261083
+    lon = request.args.get("lon") #32.744049317303556
+
+    if not lat or not lon:
+        return jsonify({"error": "Lat ve lon zorunlu"}), 400
+
+    try:
+        result = CafeRecommendationService.find_top5_cafes(lat, lon)
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+#CAFE RECOMMENDATION SERVICE ENDPOINTS END 
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=False)

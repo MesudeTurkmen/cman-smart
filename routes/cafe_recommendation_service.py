@@ -6,7 +6,77 @@ from dotenv import load_dotenv
 load_dotenv()
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
 
-class CafeRecommendationService:  # Replace with your actual API key
+class CafeRecommendationService: 
+
+    PRIORITY_CAFE_IDS = {
+        # Örnek: place_id’ler
+        "ChIJN1t_tDeuEmsRUsoyG83frY4",  # Cafe A
+        "ChIJsZ3vcCyuEmsRKW5sQ2W-CRg",  # Cafe B
+    }
+
+    @staticmethod
+    def find_top5_cafes(latitude, longitude):
+        latitude = float(latitude)
+        longitude = float(longitude)
+
+        url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+        params = {
+            "location": f"{latitude},{longitude}",
+            "radius": 2000,
+            "type": "cafe",
+            "key": GOOGLE_MAPS_API_KEY
+        }
+
+        response = requests.get(url, params=params)
+        data = response.json()
+
+        if "results" not in data or not data["results"]:
+            return {"error": "Kafe bulunamadı"}
+
+        # Filtrelenmiş kafe listesi + mesafe hesaplama
+        cafes_with_distance = []
+        for cafe in data["results"]:
+            place_id = cafe.get("place_id")
+            name = cafe.get("name", "")
+            if "cafe" in cafe.get("types", []) and any(k in name.lower() for k in ["cafe", "coffee", "kafe"]):
+                loc = cafe["geometry"]["location"]
+                distance = CafeRecommendationService.calculate_distance(
+                    latitude, longitude, loc["lat"], loc["lng"]
+                )
+                cafes_with_distance.append((cafe, distance))
+
+        # Öncelikli kafeleri öne al
+        priority_cafes = []
+        other_cafes = []
+
+        seen_ids = set()
+        for cafe, dist in cafes_with_distance:
+            place_id = cafe["place_id"]
+            if place_id in CafeRecommendationService.PRIORITY_CAFE_IDS:
+                priority_cafes.append((cafe, dist))
+                seen_ids.add(place_id)
+            else:
+                other_cafes.append((cafe, dist))
+
+        # Diğerlerini mesafeye göre sırala
+        other_cafes = sorted(other_cafes, key=lambda x: x[1])
+
+        # Listeyi birleştir
+        combined = priority_cafes + [c for c in other_cafes if c[0]["place_id"] not in seen_ids]
+        top_5 = combined[:5]
+
+        # Çıktıyı hazırla
+        results = []
+        for cafe, distance in top_5:
+            results.append({
+                "name": cafe["name"],
+                "address": cafe.get("vicinity", "Adres yok"),
+                "distance_meters": round(distance, 2),
+                "google_maps_link": f"https://www.google.com/maps/place/?q=place_id:{cafe['place_id']}",
+                "priority": cafe["place_id"] in CafeRecommendationService.PRIORITY_CAFE_IDS
+            })
+
+        return results
 
     @staticmethod
     def calculate_distance(lat1, lon1, lat2, lon2):
