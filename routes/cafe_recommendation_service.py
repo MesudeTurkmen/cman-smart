@@ -39,7 +39,7 @@ class CafeRecommendationService:
             if "cafe" in cafe.get("types", []) and any(k in name.lower() for k in ["cafe", "coffee", "kafe"]):
                 loc = cafe["geometry"]["location"]
                 distance = CafeRecommendationService.calculate_distance(
-                    latitude, longitude, loc["lat"], loc["lng"]
+                    lat, lon, loc["lat"], loc["lng"]
                 )
                 cafes_with_distance.append((cafe, distance))
 
