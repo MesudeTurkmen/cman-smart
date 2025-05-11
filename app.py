@@ -9,7 +9,7 @@ from routes.firebase_crud import *
 from routes.weather import *
 from routes.auth import *
 from geopy import Nominatim
-
+from models.notification import Notification
 
 # Loglama ve Environment Yapılandırması
 load_dotenv()
@@ -103,6 +103,42 @@ def home():
 @app.route('/api/test', methods=['GET'])
 def test():
     return jsonify({"message": "Merhaba AWS!"})
+
+#REGISTER DEVICE
+@app.route('/register-device', methods=['POST'])
+def register_device():
+    try:
+        user_id = request.json['user_id']
+        token = request.json['token']
+        fcm = FCMManager(user_id)
+        success = fcm.register_device(token)
+        return jsonify({"success": success}), 200 if success else 400
+    except KeyError:
+        return jsonify({"error": "Geçersiz istek formatı"}), 400
+#REGISTER DEVICE
+
+#SET LOCATION 
+@app.route('/set_location', methods=['POST'])
+def set_location():
+    try:
+        data = request.get_json()
+
+        user_id = data.get("user_id")
+        location = data.get("location")
+
+        if not user_id or not location:
+            return jsonify({"error": "Eksik veri"}), 400
+
+        ref = db.reference(f"users/{user_id}/location")
+        ref.set(location)
+
+        return jsonify({"message": "Konum başarıyla kaydedildi", "user_id": user_id, "location": location}), 200
+
+    except Exception as e:
+        print(f"set_location HATASI: {e}")
+        return jsonify({"error": "Sunucu hatası"}), 500
+#SET LOCATION
+
 
 #WEATHER.PY ENDPOINTS
 @app.route('/weather/weekly/<user_id>', methods=['GET'])
@@ -264,6 +300,29 @@ def daily_detailed_weather(user_id: str):
         return jsonify({"error": "Internal server error"}), 500
 
 #WEATHER.PY ENDPOINTS END    
+
+#NOTIFICATION.PY ENDPOINTS
+@app.route('/notifications/<user_id>', methods=['GET'])
+def get_notifications(user_id: str):
+    try:
+        notifier = Notification(user_id)
+        return jsonify({
+            "count": len(notifications),
+            "notifications": notifier.get_all()
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/notifications/<user_id>/read/<notification_id>', methods=['POST'])
+def mark_notification_read(user_id: str, notification_id: str):
+    try:
+        notifier = Notification(user_id)
+        success = notifier.mark_as_read(notification_id)
+        return jsonify({"success": success}), 200 if success else 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+#NOTIFICATION.PY ENDPOINTS END
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=False)

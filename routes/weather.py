@@ -6,11 +6,16 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from functools import lru_cache
 from firebase_admin import db
+from typing import Dict, Optional
+from models.notification import send_weather_alert
+from models.notification import Notification
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+TEMP_DROP_THRESHOLD = 5  # °C cinsinden sıcaklık düşüşü eşiği
 
 def get_weather(city: str) -> dict:
     """Visual Crossing API ile hava durumu ve yağış bilgisini çeker."""
@@ -74,3 +79,17 @@ def get_time(user_id: str) -> str:
     
 print(get_weather("Ankara"))
 print(get_time("user123"))
+
+def check_sudden_change(user_id: str, previous_data: Dict, current_data: Dict) -> Optional[Dict]:
+    alerts = []
+    
+    # Sıcaklık düşüş kontrolü
+    temp_diff = previous_data['current']['temp'] - current_data['current']['temp']
+    if temp_diff >= TEMP_DROP_THRESHOLD:
+        alert = {
+            "type": "temperature_drop",
+            "message": f"Sıcaklık son 1 saatte {temp_diff}°C düştü!",
+            "location": current_data['location']
+        }
+        alerts.append(alert)
+        send_weather_alert(user_id, alert)  # 🔔 Bildirim tetikleme

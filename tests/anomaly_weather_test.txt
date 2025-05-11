@@ -8,3 +8,13 @@ if success:
     print("Bildirim gönderildi!")
 else:
     print("Anomali yok")
+
+
+
+alert_data = {
+    'message': "Sıcaklık 10°C düştü!",
+    'type': 'temperature_drop',
+    'alert_id': '12345',
+    'location': 'İstanbul'
+}
+send_weather_alert('user123', alert_data)
