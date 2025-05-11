@@ -16,6 +16,9 @@ from routes.cafe_recommendation_service import *
 import requests
 from flask import Blueprint, request
 from routes.health import *
+import google.generativeai as genai
+from bs4 import BeautifulSoup
+import requests
 
 # Loglama ve Environment Yapılandırması
 load_dotenv()
@@ -145,6 +148,63 @@ def set_location():
         return jsonify({"error": "Sunucu hatası"}), 500
 #SET LOCATION
 
+#GEMINI
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+model = genai.GenerativeModel('gemini-pro')
+
+def analyze_with_gemini(prompt: str, context: str) -> str:
+    """Gemini'ye metin analizi yaptırır"""
+    try:
+        response = model.generate_content(f"{prompt}\n\nContext: {context}")
+        return response.text
+    except Exception as e:
+        logger.error(f"Gemini analiz hatası: {str(e)}")
+        return "Durum analizi şu anda mevcut değil"
+
+# --------------------------
+# Akıllı Uyarı Sistemleri
+# --------------------------
+def enhanced_weather_alert(user_id: str, alert_data: dict):
+    """Hava durumu uyarılarını Gemini ile zenginleştirir"""
+    analysis = analyze_with_gemini(
+        prompt="Aşağıdaki hava durumu uyarısını basit Türkçe ile açıkla ve 3 maddelik öneri sun:",
+        context=alert_data['message']
+    )
+    
+    enhanced_alert = {
+        **alert_data,
+        "gemini_analysis": analysis,
+        "type": "enhanced_weather_alert"
+    }
+    
+    # Bildirimi kaydet ve gönder
+    return send_weather_alert(user_id, enhanced_alert)
+
+def scrape_municipality_announcements(city: str = "ankara") -> list:
+    """Belediye duyurularını çeker (Örnek: Ankara Büyükşehir)"""
+    try:
+        url = f"https://www.{city}.bel.tr/haberler"
+        response = requests.get(url, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        announcements = []
+        for item in soup.select('.news-item'):
+            title = item.select_one('.news-title').text.strip()
+            date = item.select_one('.news-date').text.strip()
+            content = item.select_one('.news-excerpt').text.strip()
+            
+            announcements.append({
+                "title": title,
+                "date": date,
+                "content": content
+            })
+            
+        return announcements[:5]  # Son 5 duyuru
+    
+    except Exception as e:
+        logger.error(f"Belediye duyuru çekme hatası: {str(e)}")
+        return []
+#GEMINI END
 
 #WEATHER.PY ENDPOINTS
 @app.route('/weather/weekly/<user_id>', methods=['GET'])
@@ -307,26 +367,114 @@ def daily_detailed_weather(user_id: str):
 
 #WEATHER.PY ENDPOINTS END    
 
-#NOTIFICATION.PY ENDPOINTS
-@app.route('/notifications/<user_id>', methods=['GET'])
+#NOTIFICATION.PY ENDPOINT
+notifications_bp = Blueprint('notifications', __name__, url_prefix='/api/notifications')
+# --------------------------
+# Temel Bildirim İşlemleri
+# --------------------------
+
+@notifications_bp.route('/<user_id>', methods=['POST'])
+def create_notification(user_id: str):
+    """Yeni bildirim oluşturma"""
+    data = request.get_json()
+    notifier = Notification(user_id)
+    notification_id = notifier.create(
+        notification_type=data.get('type', 'general'),
+        message=data['message'],
+        metadata=data.get('metadata')
+    )
+    if notification_id:
+        return jsonify({"id": notification_id}), 201
+    return jsonify({"error": "Bildirim oluşturulamadı"}), 500
+
+@notifications_bp.route('/<user_id>', methods=['GET'])
 def get_notifications(user_id: str):
+    """Tüm bildirimleri listeleme"""
+    notifier = Notification(user_id)
+    limit = int(request.args.get('limit', 100))
+    return jsonify(notifier.get_all(limit)), 200
+
+@notifications_bp.route('/<user_id>/<notification_id>/read', methods=['PUT'])
+def mark_as_read(user_id: str, notification_id: str):
+    """Bildirimi okundu olarak işaretleme"""
+    notifier = Notification(user_id)
+    success = notifier.mark_as_read(notification_id)
+    return jsonify({"success": success}), 200 if success else 400
+
+@notifications_bp.route('/<user_id>/<notification_id>', methods=['DELETE'])
+def delete_notification(user_id: str, notification_id: str):
+    """Bildirimi silme"""
     try:
-        notifier = Notification(user_id)
-        return jsonify({
-            "count": len(notifications),
-            "notifications": notifier.get_all()
-        }), 200
+        ref = db.reference(f'/notifications/{user_id}/{notification_id}')
+        ref.delete()
+        return jsonify({"success": True}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/notifications/<user_id>/read/<notification_id>', methods=['POST'])
-def mark_notification_read(user_id: str, notification_id: str):
+# --------------------------
+# Push Bildirim İşlemleri
+# --------------------------
+
+@notifications_bp.route('/devices/<user_id>', methods=['POST'])
+def register_device(user_id: str):
+    """Cihaz token kayıt"""
+    data = request.get_json()
+    fcm = FCMManager(user_id)
+    success = fcm.register_device(data['token'])
+    return jsonify({"success": success}), 200 if success else 400
+
+@notifications_bp.route('/push/test/<user_id>', methods=['POST'])
+def send_test_push(user_id: str):
+    """Test push bildirimi gönderme"""
+    fcm = FCMManager(user_id)
+    result = fcm.send_push_notification(
+        title=request.json.get('title', 'Test Bildirim'),
+        body=request.json.get('body', 'Bu bir test bildirimidir'),
+        data=request.json.get('data', {'type': 'test'})
+    )
+    return jsonify(result), 200
+
+
+@notifications_bp.route('/analyzed-alerts/<user_id>', methods=['GET'])
+def get_analyzed_alerts(user_id: str):
+    """Zenginleştirilmiş uyarıları getir"""
+    ref = db.reference(f'/notifications/{user_id}')
+    alerts = ref.order_by_child('type').equal_to('enhanced_weather_alert').get()
+    return jsonify(list(alerts.values())), 200
+
+@notifications_bp.route('/municipality-alerts/<user_id>', methods=['POST'])
+def trigger_municipality_alert(user_id: str):
+    """Belediye duyurularını analiz edip bildirim oluştur"""
     try:
-        notifier = Notification(user_id)
-        success = notifier.mark_as_read(notification_id)
-        return jsonify({"success": success}), 200 if success else 400
+        # 1. Duyuruları çek
+        announcements = scrape_municipality_announcements()
+        
+        # 2. Her duyuruyu analiz et
+        for announcement in announcements:
+            analysis = analyze_with_gemini(
+                prompt="Bu belediye duyurusunu özetle ve vatandaşlar için önemli noktaları listele:",
+                context=f"{announcement['title']}\n{announcement['content']}"
+            )
+            
+            # 3. Bildirim oluştur
+            Notification(user_id).create(
+                notification_type="municipality_alert",
+                message=f"Belediye Duyurusu: {announcement['title']}",
+                metadata={
+                    "original": announcement,
+                    "analysis": analysis
+                }
+            )
+            
+        return jsonify({"processed_items": len(announcements)}), 200
+        
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    
+@notifications_bp.route('/weather-alert/<user_id>', methods=['POST'])
+def trigger_weather_alert(user_id: str):
+    alert_data = request.get_json()
+    return enhanced_weather_alert(user_id, alert_data)
 #NOTIFICATION.PY ENDPOINTS END
 
 #HEALTH.PY ENDPOINTS
@@ -432,8 +580,9 @@ def get_top5_cafes():
         return jsonify(result), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 #CAFE RECOMMENDATION SERVICE ENDPOINTS END 
+
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=False)
