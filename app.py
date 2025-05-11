@@ -10,6 +10,10 @@ from routes.weather import *
 from routes.auth import *
 from geopy import Nominatim
 from models.notification import Notification
+from models.notification import *
+import requests
+from flask import Blueprint, request
+from routes.health import *
 
 # Loglama ve Environment Yapılandırması
 load_dotenv()
@@ -323,6 +327,67 @@ def mark_notification_read(user_id: str, notification_id: str):
         return jsonify({"error": str(e)}), 500
 #NOTIFICATION.PY ENDPOINTS END
 
+#HEALTH.PY ENDPOINTS
+health_bp = Blueprint('health', __name__, url_prefix='/api/health')
+emergency_bp = Blueprint('emergency', __name__, url_prefix='/api/emergency')
+
+@health_bp.route('/<user_id>', methods=['POST'])
+def save_health_info(user_id):
+    """Kullanıcının sağlık bilgilerini kaydetme"""
+    data = request.get_json()
+    return save_user_health_data(user_id, data)
+
+@health_bp.route('/<user_id>', methods=['GET'])
+def get_health_info(user_id):
+    """Kullanıcının sağlık bilgilerini getirme"""
+    return get_user_health_data(user_id)
+
+# --------------------------
+# Gerçek Zamanlı Sağlık Verileri
+# --------------------------
+
+@health_bp.route('/realtime/<user_id>', methods=['GET'])
+def realtime_health_data(user_id):
+    """Anlık sağlık verilerini getirme"""
+    use_real_api = request.args.get('real', 'false').lower() == 'true'
+    data = get_realtime_health_data(user_id, use_real_api)
+    return jsonify(data), 200
+
+# --------------------------
+# Acil Durum Kişi Yönetimi
+# --------------------------
+
+@emergency_bp.route('/contacts/<user_id>', methods=['POST'])
+def add_contact(user_id):
+    """Yeni acil durum kişisi ekleme"""
+    contact_data = request.get_json()
+    return add_emergency_contact(user_id, contact_data)
+
+@emergency_bp.route('/contacts/<user_id>', methods=['GET'])
+def get_contacts(user_id):
+    """Acil durum kişilerini listeleme"""
+    return get_emergency_contacts(user_id)
+
+@emergency_bp.route('/contacts/<user_id>/<contact_id>', methods=['DELETE'])
+def delete_contact(user_id, contact_id):
+    """Acil durum kişisini silme"""
+    return delete_emergency_contact(user_id, contact_id)
+
+# --------------------------
+# Acil Durum Yönetimi
+# --------------------------
+
+@emergency_bp.route('/check/<user_id>', methods=['GET'])
+def check_emergency_status(user_id):
+    """Acil durum kontrolü"""
+    is_emergency = check_emergency(user_id)
+    return jsonify({"emergency": is_emergency}), 200
+
+@emergency_bp.route('/trigger/<user_id>', methods=['POST'])
+def trigger_emergency_action(user_id):
+    """Acil durum tetikleme ve SMS gönderme"""
+    return trigger_emergency(user_id)
+#HEALTH.PY ENDPOINTS END
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=False)
